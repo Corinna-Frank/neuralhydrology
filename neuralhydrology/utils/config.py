@@ -857,6 +857,13 @@ class Config(object):
         return self._get_value_verbose("validation_start_date")
 
     @property
+    def reduce_validation_output(self) -> bool:
+        return self._cfg.get("reduce_validation_output", False)
+    @property
+    def save_quantiles(self) -> List[float]:
+        return self._cfg.get("save_quantiles", None)
+
+    @property
     def verbose(self) -> int:
         """Defines level of verbosity.
 

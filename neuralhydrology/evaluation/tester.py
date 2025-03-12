@@ -281,6 +281,16 @@ class BaseTester(object):
                         pd.DatetimeIndex(pd.date_range(xr["date"].values[0], xr["date"].values[-1], freq=lowest_freq),
                                          name='date')
                 })
+                if self.cfg.reduce_validation_output:
+                    # only keep last timestep
+                    xr = xr.sel(time_step=0,drop=False).expand_dims({'time_step':1})
+                    # only keep certain quantiles, if output is probabilistic
+                    if 'samples' in xr.dims and self.cfg.save_quantiles is not None:
+                        sim_vars = [v for v in data_vars if v.endswith('_sim')]
+                        if not type(self.cfg.save_quantiles)==list: raise ValueError("'save_quantiles' must be a list of float values")
+                        for v in sim_vars:
+                            xr[v] = xr[v].quantile(self.cfg.save_quantiles,dim="samples") # creates a new dimension called 'quantile' and drops dimension 'samples'
+
                 results[basin][freq]['xr'] = xr
 
                 # create datetime range at the current frequency
@@ -315,6 +325,8 @@ class BaseTester(object):
 
                             if 'samples' in sim.dims:
                                 sim = sim.mean(dim='samples')
+                            elif 'quantile' in sim.dims:
+                                sim = sim.mean(dim='quantile')
 
                             var_metrics = metrics if isinstance(metrics, list) else metrics[target_variable]
                             if 'all' in var_metrics:
