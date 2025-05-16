@@ -255,7 +255,14 @@ class BaseTester(object):
                     # if y_hat has 4 dim and we have multiple features we expand the dimensions for scaling
                     feature_scaler = np.expand_dims(feature_scaler, (0, 1, 3))
                     feature_center = np.expand_dims(feature_center, (0, 1, 3))
-                    y_hat_freq = y_hat[freq] * feature_scaler + feature_center
+                    if self.cfg.output_parameters:
+                        # mu, b, tau are stacked in last dimension
+                        # this works only for a single laplacian. If there are several, need to add the weights as a last stack
+                        y_hat_freq = torch.stack((y_hat[freq][:,:,:,0] * feature_scaler + feature_center, # mu
+                                                 y_hat[freq][:,:,:,1] * feature_scaler, # b
+                                                 y_hat[freq][:,:,:,2],)) # tau
+                    else:
+                        y_hat_freq = y_hat[freq] * feature_scaler + feature_center
                 else:
                     raise RuntimeError(f"Simulations have {y_hat[freq].ndim} dimension. Only 3 and 4 are supported.")
 
@@ -358,6 +365,8 @@ class BaseTester(object):
                                 #if 'mode' in sim['quantile']: sim = sim.sel(quantile='mode',drop=True)
                                 #elif 0.5 in sim['quantile']: sim = sim.sel(quantile=0.5,drop=True)
                                 #else: sim = sim.mean(dim='quantile')
+                            elif 'mu_b_tau' in sim.dims:
+                                sim = sim.isel(mu_b_tau=0,drop=True) # select mu
 
                             var_metrics = metrics if isinstance(metrics, list) else metrics[target_variable]
                             if 'all' in var_metrics:
@@ -600,8 +609,11 @@ class UncertaintyTester(BaseTester):
     def _get_predictions_and_loss(self, model: BaseModel, data: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, float]:
         outputs = model(data)
         _, all_losses = self.loss_obj(outputs, data)
-        predictions = model.sample(data, self.cfg.n_samples)
-        model.eval()
+        if self.cfg.output_parameters:
+            predictions = {key: outputs[key] for key in ['mu', 'b', 'tau']}
+        else:
+            predictions = model.sample(data, self.cfg.n_samples)
+            model.eval()
         return predictions, {k: v.item() for k, v in all_losses.items()}
 
     def _subset_targets(self,
@@ -610,7 +622,10 @@ class UncertaintyTester(BaseTester):
                         predictions: np.ndarray,
                         predict_last_n: int,
                         freq: str = None):
-        y_hat_sub = predictions[f'y_hat{freq}'][:, -predict_last_n:, :]
+        if self.cfg.output_parameters:
+            y_hat_sub = torch.stack((predictions['mu'][:, -predict_last_n:, :],predictions['b'][:, -predict_last_n:, :],predictions['tau'][:, -predict_last_n:, :]), -1)
+        else:
+            y_hat_sub = predictions[f'y_hat{freq}'][:, -predict_last_n:, :]
         y_sub = data[f'y{freq}'][:, -predict_last_n:, :]
         return y_hat_sub, y_sub
 
@@ -618,7 +633,10 @@ class UncertaintyTester(BaseTester):
         data = {}
         for i, var in enumerate(self.cfg.target_variables):
             data[f"{var}_obs"] = (('date', 'time_step'), y[:, :, i])
-            data[f"{var}_sim"] = (('date', 'time_step', 'samples'), y_hat[:, :, i, :])
+            if self.cfg.output_parameters:
+                data[f"{var}_sim"] = (('date', 'time_step', 'mu_b_tau'), y_hat[:, :, i, :])
+            else:
+                data[f"{var}_sim"] = (('date', 'time_step', 'samples'), y_hat[:, :, i, :])
         return data
 
     def _get_plots(self, qobs: np.ndarray, qsim: np.ndarray, title: str):

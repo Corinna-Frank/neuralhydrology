@@ -862,7 +862,11 @@ class Config(object):
     @property
     def save_quantiles(self) -> List[float]:
         return self._cfg.get("save_quantiles", None)
-
+        
+    @property
+    def output_parameters(self) -> bool:
+        return self._cfg.get("output_parameters", False)
+        
     @property
     def verbose(self) -> int:
         """Defines level of verbosity.
