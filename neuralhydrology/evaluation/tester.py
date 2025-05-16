@@ -13,6 +13,7 @@ import torch
 import xarray
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+from scipy.stats import mode
 
 from neuralhydrology.datasetzoo import get_dataset
 from neuralhydrology.datasetzoo.basedataset import BaseDataset
@@ -289,7 +290,32 @@ class BaseTester(object):
                         sim_vars = [v for v in data_vars if v.endswith('_sim')]
                         if not type(self.cfg.save_quantiles)==list: raise ValueError("'save_quantiles' must be a list of float values")
                         for v in sim_vars:
+                            
+                            # also calculate the mode
+                            mode_values, _ = mode(xr[v].where(xr[v]>0).round(decimals=2).transpose('samples',...).values, axis=0, nan_policy='omit')                            
+                            # Convert the mode result back into an xarray DataArray
+                            coords={dim: xr[v][dim] for dim in xr[v].transpose('samples',...).dims[1:]}
+                            # Dynamically create the xarray DataArray with mode values
+                            mode_xr = xarray.DataArray(mode_values, coords=coords, dims=xr[v].transpose('samples',...).dims[1:], name=v)
+                            # Expand dimensions to add the 'aggregate' dimension with the value 'mode'
+                            mode_xr = mode_xr.expand_dims({'quantile': ['mode']})#.assign_coords(quantile='mode')
+                            
+                            mean_xr = xr[v].mean(dim="samples").expand_dims({'quantile': ['mean']}) # creates a new dimension called 'quantile' and drops dimension 'samples'
+                            
+                            # calculate quantiles
                             xr[v] = xr[v].quantile(self.cfg.save_quantiles,dim="samples") # creates a new dimension called 'quantile' and drops dimension 'samples'
+                            #print('mode_xr:\n',mode_xr)
+                            #print('xr[v]:\n',xr[v])
+                            #print('merged:\n',xarray.merge([xr[v],mode_xr]))
+                            #print('combine_first:\n',xr[v].combine_first(mode_xr))
+
+                            # add mode to dataset
+                            #xr[v] = xarray.merge([xr[v],mode_xr])[v]
+                            #xr[v] = xr[v].combine_first(mode_xr)
+                            xr = xarray.merge([xr.drop_vars(v),xarray.merge([xr[v],mode_xr,mean_xr])])
+                            #print('xr[v]:\n',xr[v])
+
+
 
                 results[basin][freq]['xr'] = xr
 
@@ -326,7 +352,12 @@ class BaseTester(object):
                             if 'samples' in sim.dims:
                                 sim = sim.mean(dim='samples')
                             elif 'quantile' in sim.dims:
-                                sim = sim.mean(dim='quantile')
+                                # use mean to evaluate
+                                if 'mean' in sim['quantile']: sim = sim.sel(quantile='mean',drop=True)
+                                else: raise ValueError("Want to evaluate on Mean, but Mean not present in dataset")
+                                #if 'mode' in sim['quantile']: sim = sim.sel(quantile='mode',drop=True)
+                                #elif 0.5 in sim['quantile']: sim = sim.sel(quantile=0.5,drop=True)
+                                #else: sim = sim.mean(dim='quantile')
 
                             var_metrics = metrics if isinstance(metrics, list) else metrics[target_variable]
                             if 'all' in var_metrics:
