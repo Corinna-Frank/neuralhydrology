@@ -249,20 +249,16 @@ class BaseTester(object):
                 feature_center = self.scaler["xarray_feature_center"][self.cfg.target_variables].to_array().values
                 y_freq = y[freq] * feature_scaler + feature_center
                 # rescale predictions
-                if y_hat[freq].ndim == 3 or (len(feature_scaler) == 1):
+                if self.cfg.output_parameters:
+                    # rescale after dataset is built
+                    y_hat_freq = y_hat[freq]
+                elif y_hat[freq].ndim == 3 or (len(feature_scaler) == 1):
                     y_hat_freq = y_hat[freq] * feature_scaler + feature_center
                 elif y_hat[freq].ndim == 4:
                     # if y_hat has 4 dim and we have multiple features we expand the dimensions for scaling
                     feature_scaler = np.expand_dims(feature_scaler, (0, 1, 3))
                     feature_center = np.expand_dims(feature_center, (0, 1, 3))
-                    if self.cfg.output_parameters:
-                        # mu, b, tau are stacked in last dimension
-                        # this works only for a single laplacian. If there are several, need to add the weights as a last stack
-                        y_hat_freq = torch.stack((y_hat[freq][:,:,:,0] * feature_scaler + feature_center, # mu
-                                                 y_hat[freq][:,:,:,1] * feature_scaler, # b
-                                                 y_hat[freq][:,:,:,2],)) # tau
-                    else:
-                        y_hat_freq = y_hat[freq] * feature_scaler + feature_center
+                    y_hat_freq = y_hat[freq] * feature_scaler + feature_center
                 else:
                     raise RuntimeError(f"Simulations have {y_hat[freq].ndim} dimension. Only 3 and 4 are supported.")
 
@@ -289,6 +285,14 @@ class BaseTester(object):
                         pd.DatetimeIndex(pd.date_range(xr["date"].values[0], xr["date"].values[-1], freq=lowest_freq),
                                          name='date')
                 })
+                if self.cfg.output_parameters:
+                    # rescale CMAL parameters
+                    # mu *scaler+center, b*scaler, tau
+                    for target_variable in self.cfg.target_variables:
+                        # Apply the transformation only to variable
+                        xr[f"{target_variable}_sim"] = xarray.where(xr[f"{target_variable}_sim"]["mu_b_tau"] == 0, xr[f"{target_variable}_sim"] * feature_scaler.squeeze() + feature_center.squeeze(), xr[f"{target_variable}_sim"]) # transform mu
+                        xr[f"{target_variable}_sim"] = xarray.where(xr[f"{target_variable}_sim"]["mu_b_tau"] == 1, xr[f"{target_variable}_sim"] * feature_scaler.squeeze(), xr[f"{target_variable}_sim"]) # transform b
+
                 if self.cfg.reduce_validation_output:
                     # only keep last timestep
                     xr = xr.sel(time_step=0,drop=False).expand_dims({'time_step':1})
