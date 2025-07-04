@@ -363,10 +363,10 @@ class BaseTester(object):
                             if 'samples' in sim.dims:
                                 sim = sim.mean(dim='samples')
                             elif 'quantile' in sim.dims:
-                                # use mean to evaluate
-                                if 'mean' in sim['quantile']: sim = sim.sel(quantile='mean',drop=True)
-                                else: raise ValueError("Want to evaluate on Mean, but Mean not present in dataset")
-                                #if 'mode' in sim['quantile']: sim = sim.sel(quantile='mode',drop=True)
+                                # # use mean to evaluate
+                                # if 'mean' in sim['quantile']: sim = sim.sel(quantile='mean',drop=True)
+                                # else: raise ValueError("Want to evaluate on Mean, but Mean not present in dataset")
+                                if 'mode' in sim['quantile']: sim = sim.sel(quantile='mode',drop=True)
                                 #elif 0.5 in sim['quantile']: sim = sim.sel(quantile=0.5,drop=True)
                                 #else: sim = sim.mean(dim='quantile')
                             elif 'mu_b_tau' in sim.dims:
