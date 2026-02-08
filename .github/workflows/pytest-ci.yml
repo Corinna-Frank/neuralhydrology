@@ -12,35 +12,28 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
-
+    name: PyTest CI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    env:
+      # Make sure matplotlib uses a non-interactive backend. Removing this leads to CI failure on Windows.
+      MPLBACKEND: Agg
+    strategy:
+      matrix:
+        os: ["ubuntu-latest", "macos-latest", "windows-latest"]
     steps:
-      # Checkout the repository under $GITHUB_WORKSPACE
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      # initialize conda
-      - name: Conda setup
-        uses: s-weigand/setup-conda@v1
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
         with:
-          update-conda: true
-          python-version: '3.10'
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
 
-      # cache the conda installation to speedup the CI runs
-      - uses: actions/cache@v3
-        id: cache
-        with:
-          path: /usr/share/miniconda/envs/neuralhydrology
-          key: ${{ runner.os }}-conda-cache-${{ hashFiles('environments/environment_cpu.yml') }}
+      - name: Set up Python
+        run: uv python install 3.10
 
-      # on cache miss, create the env from scratch
-      - name: Conda environment creation
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: |
-          conda env create -f environments/environment_cpu.yml
-          source activate neuralhydrology
+      - name: Install the project
+        run: uv sync
 
-      # Run the tests
-      - name: Testing with pytest
-        run: |
-          source activate neuralhydrology
-          pytest --cov=neuralhydrology
+      - name: Run tests
+        run: uv run pytest --cov=neuralhydrology

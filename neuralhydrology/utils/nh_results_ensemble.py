@@ -105,10 +105,8 @@ def _create_ensemble(results_files: List[Path], frequencies: List[str], config: 
             # create datetime range at the current frequency, removing time steps that are not being predicted
             frequency_factor = int(get_frequency_factor(lowest_freq, freq))
             # make sure the last day is fully contained in the range
-            freq_date_range = pd.date_range(start=ensemble_xr.coords['date'].values[0],
-                                            end=ensemble_xr.coords['date'].values[-1] \
-                                                + pd.Timedelta(days=1, seconds=-1),
-                                            freq=freq)
+            freq_date_range = pd.date_range(start=ensemble_xr.coords['date'].values[0], 
+                                            periods=len(ensemble_xr.coords['date']) * frequency_factor, freq=freq)
             mask = np.ones(frequency_factor).astype(bool)
             mask[:-len(ensemble_xr.coords['time_step'])] = False
             freq_date_range = freq_date_range[np.tile(mask, len(ensemble_xr.coords['date']))]
@@ -228,10 +226,15 @@ def _main():
     output_dir = Path(args['output_dir']).absolute()
 
     metrics = args['metrics']
+    cfg = Config(run_dirs[0] / 'config.yml')
     if metrics is None:
-        metrics = Config(run_dirs[0] / 'config.yml').metrics
+        metrics = cfg.metrics
+        if isinstance(metrics, dict):
+            metrics = list(set(metrics.values()))
+    if 'all' in metrics:
+        metrics = get_available_metrics()
     try:
-        df = metrics_to_dataframe(ensemble_results, metrics)
+        df = metrics_to_dataframe(ensemble_results, metrics, cfg.target_variables)
         file_name = output_dir / f"{args['period']}_ensemble_metrics.csv"
         df.to_csv(file_name)
         print(f"Stored metrics of ensemble run to {file_name}")
