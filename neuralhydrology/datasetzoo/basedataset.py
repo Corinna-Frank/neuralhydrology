@@ -556,6 +556,7 @@ class BaseDataset(Dataset):
             LOGGER.info("Create lookup table and convert to pytorch tensor")
 
         # list to collect basins ids of basins without a single training sample
+        if self.cfg.nan_handling_method == 'input_replacing': n_samples, n_samples_with_missing_inputs = 0, 0
         basins_without_samples = []
         basin_coordinates = xr["basin"].values.tolist()
         for basin in tqdm(basin_coordinates, file=sys.stdout, disable=self._disable_pbar):
@@ -628,7 +629,12 @@ class BaseDataset(Dataset):
                                         y=[y[freq] for freq in self.frequencies] if self.is_train else None,
                                         frequency_maps=[frequency_maps[freq] for freq in self.frequencies],
                                         seq_length=self.seq_len,
-                                        predict_last_n=self._predict_last_n)
+                                        predict_last_n=self._predict_last_n,
+                                        ignore_missing_inputs=self.cfg.nan_handling_method == 'input_replacing')
+                if self.cfg.nan_handling_method == 'input_replacing':
+                    n_samples += np.sum(flag[0])
+                    n_samples_with_missing_inputs += flag[1]
+                    flag = flag[0]
 
             # Concatenate autoregressive columns to dynamic inputs *after* validation, so as to not remove
             # samples with missing autoregressive inputs.
@@ -659,6 +665,9 @@ class BaseDataset(Dataset):
             else:
                 basins_without_samples.append(basin)
 
+        if self.cfg.nan_handling_method == 'input_replacing' and n_samples_with_missing_inputs>0: 
+            print('%d / %d (%.1f%%) valid samples were only kept because nan_handling_method is active'%(n_samples_with_missing_inputs, n_samples, 100*n_samples_with_missing_inputs/n_samples))
+            LOGGER.info("%d / %d (%.1f%%) valid samples were only kept because nan_handling_method is active"%(n_samples_with_missing_inputs, n_samples, 100*n_samples_with_missing_inputs/n_samples))
         if basins_without_samples:
             LOGGER.info(
                 f"These basins do not have a single valid sample in the {self.period} period: {basins_without_samples}")
@@ -859,7 +868,7 @@ class BaseDataset(Dataset):
 
 @njit()
 def _validate_samples(x_d: List[np.ndarray], x_s: List[np.ndarray], y: List[np.ndarray], seq_length: List[int],
-                     predict_last_n: List[int], frequency_maps: List[np.ndarray]) -> np.ndarray:
+                     predict_last_n: List[int], frequency_maps: List[np.ndarray], ignore_missing_inputs: bool) -> np.ndarray:
     """Checks for invalid samples due to NaN or insufficient sequence length.
 
     Parameters
@@ -877,6 +886,8 @@ def _validate_samples(x_d: List[np.ndarray], x_s: List[np.ndarray], y: List[np.n
     frequency_maps : List[np.ndarray]
         List of arrays mapping lowest-frequency samples to their corresponding last sample in each frequency;
          one list entry per frequency.
+    ignore_missing_inputs : bool
+        If True ignores missing data in the dynamic inputs. Samples with at least one value of dynamic input are flaged valid. Only use when nan_handling_method not None.
 
     Returns
     -------
@@ -887,6 +898,7 @@ def _validate_samples(x_d: List[np.ndarray], x_s: List[np.ndarray], y: List[np.n
     n_samples = len(frequency_maps[0])
 
     # 1 denote valid sample, 0 denote invalid sample
+    if ignore_missing_inputs: n_samples_with_missing_inputs = 0
     flag = np.ones(n_samples)
     for i in range(len(frequency_maps)):  # iterate through frequencies
         for j in prange(n_samples):  # iterate through lowest-frequency samples
@@ -899,7 +911,11 @@ def _validate_samples(x_d: List[np.ndarray], x_s: List[np.ndarray], y: List[np.n
             # any NaN in the dynamic inputs makes the sample invalid
             if x_d is not None:
                 _x_d = x_d[i][last_sample_of_freq - seq_length[i] + 1:last_sample_of_freq + 1]
-                if np.any(np.isnan(_x_d)):
+                if np.all(np.isnan(_x_d)):
+                    flag[j] = 0
+                    continue
+                elif np.any(np.isnan(_x_d)):
+                    if ignore_missing_inputs: n_samples_with_missing_inputs += 1; continue # sample has missing values but is kept valid because nan_handling_method is active
                     flag[j] = 0
                     continue
 
@@ -915,5 +931,6 @@ def _validate_samples(x_d: List[np.ndarray], x_s: List[np.ndarray], y: List[np.n
                 _x_s = x_s[i][last_sample_of_freq]
                 if np.any(np.isnan(_x_s)):
                     flag[j] = 0
-
-    return flag
+    
+    if ignore_missing_inputs: return flag, n_samples_with_missing_inputs
+    return flag, None # numba needs consistent return values, here: tuple(array,int)
