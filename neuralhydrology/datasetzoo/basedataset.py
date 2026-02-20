@@ -3,6 +3,7 @@ import pickle
 import re
 import sys
 import warnings
+import time
 from collections import defaultdict
 from typing import List, Dict, Union
 
@@ -556,7 +557,7 @@ class BaseDataset(Dataset):
             LOGGER.info("Create lookup table and convert to pytorch tensor")
 
         # list to collect basins ids of basins without a single training sample
-        if self.cfg.nan_handling_method == 'input_replacing': n_samples, n_samples_with_missing_inputs = 0, 0
+        if self.cfg.nan_handling_method == 'input_replacing': n_samples_with_missing_inputs = 0
         basins_without_samples = []
         basin_coordinates = xr["basin"].values.tolist()
         for basin in tqdm(basin_coordinates, file=sys.stdout, disable=self._disable_pbar):
@@ -632,9 +633,8 @@ class BaseDataset(Dataset):
                                         predict_last_n=self._predict_last_n,
                                         ignore_missing_inputs=self.cfg.nan_handling_method == 'input_replacing')
                 if self.cfg.nan_handling_method == 'input_replacing':
-                    n_samples += np.sum(flag[0])
                     n_samples_with_missing_inputs += flag[1]
-                    flag = flag[0]
+                if flag and len(flag)>0: flag = flag[0]
 
             # Concatenate autoregressive columns to dynamic inputs *after* validation, so as to not remove
             # samples with missing autoregressive inputs.
@@ -665,20 +665,34 @@ class BaseDataset(Dataset):
             else:
                 basins_without_samples.append(basin)
 
-        if self.cfg.nan_handling_method == 'input_replacing' and n_samples_with_missing_inputs>0: 
-            print('%d / %d (%.1f%%) valid samples were only kept because nan_handling_method is active'%(n_samples_with_missing_inputs, n_samples, 100*n_samples_with_missing_inputs/n_samples))
-            LOGGER.info("%d / %d (%.1f%%) valid samples were only kept because nan_handling_method is active"%(n_samples_with_missing_inputs, n_samples, 100*n_samples_with_missing_inputs/n_samples))
         if basins_without_samples:
             LOGGER.info(
                 f"These basins do not have a single valid sample in the {self.period} period: {basins_without_samples}")
         self.lookup_table = {i: elem for i, elem in enumerate(lookup)}
         self.num_samples = len(self.lookup_table)
-
+        if self.cfg.nan_handling_method == 'input_replacing' and n_samples_with_missing_inputs>0: 
+            print('%d / %d (%.1f%%) valid samples were only kept because nan_handling_method is active'%(n_samples_with_missing_inputs, self.num_samples, 100*n_samples_with_missing_inputs/self.num_samples))
+            LOGGER.info("%d / %d (%.1f%%) valid samples were only kept because nan_handling_method is active"%(n_samples_with_missing_inputs, self.num_samples, 100*n_samples_with_missing_inputs/self.num_samples))
+        LOGGER.info(f"Valid Samples: {self.num_samples}")
+        
         if self.num_samples == 0:
             if self.is_train:
                 raise NoTrainDataError
             else:
                 raise NoEvaluationDataError
+        
+        # store lookup table of valid samples per basin and date as datafreme
+        # if self.is_train:
+        now = int(time.time())
+        file_path = self.cfg.train_dir / f"train_samples_{now}.csv"
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        samples_lookup = pd.DataFrame(False, index = np.unique([dates['1D'] for basin,dates in self._dates.items()]), columns=self._dates.keys())
+        for b,i in lookup:
+            b=np.argwhere(samples_lookup.columns==b).item()
+            samples_lookup.iloc[i,b]=True
+        samples_lookup.to_csv(
+            file_path, index=True,index_label='date',
+        )
 
     def _load_hydroatlas_attributes(self):
         df = utils.load_hydroatlas_attributes(self.cfg.data_dir, basins=self.basins)
