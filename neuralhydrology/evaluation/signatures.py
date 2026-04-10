@@ -681,6 +681,11 @@ def stream_elas(da: DataArray, prcp: DataArray, datetime_coord: str = None) -> f
     # slice prcp to the same time window as the discharge
     prcp = prcp.sel({datetime_coord: slice(da.coords[datetime_coord][0], da.coords[datetime_coord][-1])})
 
+    # mask only valid time steps (both discharge and precipitation can have missing values)
+    idx = (da >= 0) & (~da.isnull())  & (~prcp.isnull())
+    da = da[idx]
+    prcp = prcp[idx]
+
     # determine the date of the first October 1st in the data period
     first_date = da.coords[datetime_coord][0].values.astype('datetime64[s]').astype(datetime)
     last_date = da.coords[datetime_coord][-1].values.astype('datetime64[s]').astype(datetime)
@@ -691,11 +696,6 @@ def stream_elas(da: DataArray, prcp: DataArray, datetime_coord: str = None) -> f
         start_date = datetime.strptime(f'{first_date.year}-10-01', '%Y-%m-%d')
 
     end_date = start_date + relativedelta(years=1) - relativedelta(seconds=1)
-
-    # mask only valid time steps (only discharge has missing values)
-    idx = (da >= 0) & (~da.isnull())
-    da = da[idx]
-    prcp = prcp[idx]
 
     # calculate long-term means
     q_mean_total = da.mean()
