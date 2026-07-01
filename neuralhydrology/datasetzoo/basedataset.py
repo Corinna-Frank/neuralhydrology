@@ -17,6 +17,7 @@ from numba import njit, prange
 from ruamel.yaml import YAML
 from torch.utils.data import Dataset
 from tqdm import tqdm
+from scipy.sparse import coo_matrix
 
 from neuralhydrology.datautils import utils
 from neuralhydrology.utils.config import Config
@@ -24,7 +25,6 @@ from neuralhydrology.utils.errors import NoTrainDataError, NoEvaluationDataError
 from neuralhydrology.utils import samplingutils
 
 LOGGER = logging.getLogger(__name__)
-
 
 class BaseDataset(Dataset):
     """Base data set class to load and preprocess data.
@@ -673,7 +673,7 @@ class BaseDataset(Dataset):
         if self.cfg.nan_handling_method == 'input_replacing' and n_samples_with_missing_inputs>0: 
             print('%d / %d (%.1f%%) valid samples were only kept because nan_handling_method is active'%(n_samples_with_missing_inputs, self.num_samples, 100*n_samples_with_missing_inputs/self.num_samples))
             LOGGER.info("%d / %d (%.1f%%) valid samples were only kept because nan_handling_method is active"%(n_samples_with_missing_inputs, self.num_samples, 100*n_samples_with_missing_inputs/self.num_samples))
-        LOGGER.info(f"Valid Samples: {self.num_samples}")
+        if self.is_train: LOGGER.info(f"Valid Samples: {self.num_samples}") # only print the first time
         
         if self.num_samples == 0:
             if self.is_train:
@@ -683,16 +683,33 @@ class BaseDataset(Dataset):
         
         # store lookup table of valid samples per basin and date as datafreme
         # if self.is_train:
-        now = int(time.time())
-        file_path = self.cfg.train_dir / f"train_samples_{now}.csv"
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        samples_lookup = pd.DataFrame(False, index = np.unique([dates['1D'] for basin,dates in self._dates.items()]), columns=self._dates.keys())
-        for b,i in lookup:
-            b=np.argwhere(samples_lookup.columns==b).item()
-            samples_lookup.iloc[i,b]=True
-        samples_lookup.to_csv(
-            file_path, index=True,index_label='date',
-        )
+        file_path = self.cfg.train_dir / f"train_samples.csv"
+        if not file_path.exists():
+            #samples_lookup = pd.DataFrame(False, index = np.unique([dates['1D'] for basin,dates in self._dates.items()]), columns=self._dates.keys())
+            #for b,i in lookup: #very inefficient
+            #    b=np.argwhere(samples_lookup.columns==b).item()
+            #    samples_lookup.iloc[i,b]=True
+            dates = np.unique([dates['1D'] for _, dates in self._dates.items()])
+            basins = list(self._dates.keys())
+            
+            # lookup is list of (basin_name, date_idx)
+            basin_to_col = {b: idx for idx, b in enumerate(basins)}
+            
+            row = np.array([i for (_, i) in lookup]).ravel()
+            col = np.array([basin_to_col[b] for (b, _) in lookup]).ravel()
+            M = coo_matrix((np.ones(len(row), dtype=int), (row, col)),
+                           shape=(len(dates), len(basins)))
+            
+            samples_lookup = pd.DataFrame.sparse.from_spmatrix(
+                M, index=dates, columns=basins
+            )
+    
+            # now = int(time.time())
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            samples_lookup.to_csv(
+                file_path, index=True,index_label='date',
+            )
+
 
     def _load_hydroatlas_attributes(self):
         df = utils.load_hydroatlas_attributes(self.cfg.data_dir, basins=self.basins)
@@ -922,17 +939,6 @@ def _validate_samples(x_d: List[np.ndarray], x_s: List[np.ndarray], y: List[np.n
                 flag[j] = 0  # too early for this frequency's seq_length (not enough history)
                 continue
 
-            # any NaN in the dynamic inputs makes the sample invalid
-            if x_d is not None:
-                _x_d = x_d[i][last_sample_of_freq - seq_length[i] + 1:last_sample_of_freq + 1]
-                if np.all(np.isnan(_x_d)):
-                    flag[j] = 0
-                    continue
-                elif np.any(np.isnan(_x_d)):
-                    if ignore_missing_inputs: n_samples_with_missing_inputs += 1; continue # sample has missing values but is kept valid because nan_handling_method is active
-                    flag[j] = 0
-                    continue
-
             # all-NaN in the targets makes the sample invalid
             if y is not None:
                 _y = y[i][last_sample_of_freq - predict_last_n[i] + 1:last_sample_of_freq + 1]
@@ -945,6 +951,29 @@ def _validate_samples(x_d: List[np.ndarray], x_s: List[np.ndarray], y: List[np.n
                 _x_s = x_s[i][last_sample_of_freq]
                 if np.any(np.isnan(_x_s)):
                     flag[j] = 0
+                    continue
+                    
+            # any NaN in the dynamic inputs makes the sample invalid
+            if x_d is not None:
+                _x_d = x_d[i][last_sample_of_freq - seq_length[i] + 1:last_sample_of_freq + 1] # shape _x_d (seq_length,dynamic_inputs)
+                #print('Shape _x_d:',np.shape(_x_d))
+                #print('_x_d:',_x_d)
+                #raise ValueError("DEBUG. Stop.")
+                _x_d = np.isnan(_x_d)
+                #date_missing = np.all(_x_d,axis=0)
+                if np.all(_x_d): # all values Nan
+                    flag[j] = 0
+                    continue
+                #elif np.any(date_missing): # all variables missing for a single or several timesteps
+                 #   flag[j] = 0
+                  #  continue
+                elif np.any(_x_d):
+                    if ignore_missing_inputs: n_samples_with_missing_inputs += 1; continue # sample has missing values but is kept valid because nan_handling_method is active
+                    flag[j] = 0
+                    continue
+                #print('Shape _x_d:',np.shape(_x_d))
+                #print('_x_d:',_x_d)
+                #raise ValueError("DEBUG. Stop.")
     
     if ignore_missing_inputs: return flag, n_samples_with_missing_inputs
     return flag, None # numba needs consistent return values, here: tuple(array,int)
