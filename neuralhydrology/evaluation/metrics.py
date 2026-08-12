@@ -754,6 +754,131 @@ def mean_absolute_percentage_peak_error(obs: DataArray, sim: DataArray) -> float
 
     return peak_mape
 
+from scipy.interpolate import interp1d
+
+def psd_rmse(obs: DataArray, sim: DataArray, max_period=90, log=True) -> float:
+    r"""
+    """
+    # verify inputs
+    _validate_inputs(obs, sim)
+
+    # get time series with only valid observations
+    obs, sim = _mask_valid(obs, sim)
+
+    # return np.nan if there are no valid observed or simulated values
+    if obs.size == 0 or sim.size == 0:
+        return np.nan
+
+    # Welch Power spectrum
+    psd_obs = _get_psd_on_period_grid (obs.values, max_period)
+    psd_sim = _get_psd_on_period_grid (sim.values, max_period)
+
+    # RMSE
+    if log: 
+        # RMSE in log-space
+        psd_obs, psd_sim = np.log(psd_obs), np.log(psd_sim)
+    f_rmse = rmse(obs=DataArray(psd_obs), sim=DataArray(psd_sim))
+    
+    return f_rmse
+
+def psd_corr(obs: DataArray, sim: DataArray, max_period=90, log=True) -> float:
+    r"""
+    """
+    # verify inputs
+    _validate_inputs(obs, sim)
+
+    # get time series with only valid observations
+    obs, sim = _mask_valid(obs, sim)
+
+    # return np.nan if there are no valid observed or simulated values
+    if obs.size == 0 or sim.size == 0:
+        return np.nan
+
+    # Welch Power spectrum
+    psd_obs = _get_psd_on_period_grid (obs.values, max_period)
+    psd_sim = _get_psd_on_period_grid (sim.values, max_period)
+
+    # Correlation: Pearson-r
+    if log: 
+        # in log-space
+        psd_obs, psd_sim = np.log(psd_obs), np.log(psd_sim)
+    f_corr = pearsonr(obs=DataArray(psd_obs), sim=DataArray(psd_sim))
+    
+    return f_corr
+
+
+def psd_kolmogorov_smirnov_dist(obs: DataArray, sim: DataArray, max_period=90) -> float:
+    r"""Kolmogorov-Smirnov distance
+    """
+    # verify inputs
+    _validate_inputs(obs, sim)
+
+    # get time series with only valid observations
+    obs, sim = _mask_valid(obs, sim)
+
+    # return np.nan if there are no valid observed or simulated values
+    if obs.size == 0 or sim.size == 0:
+        return np.nan
+
+    # Welch Power spectrum
+    psd_obs = _get_psd_on_period_grid (obs.values, max_period)
+    psd_sim = _get_psd_on_period_grid (sim.values, max_period)
+    
+    # calculate maximum vertical distance between CDFs
+    def ecdf(a): # empirical cdf
+        x, counts = np.unique(a, return_counts=True)
+        cusum = np.cumsum(counts)
+        return x, cusum / cusum[-1]
+    cdf_obs = ecdf(psd_obs)
+    cdf_sim = ecdf(psd_sim)
+
+    freq_grid = np.linspace(np.nanmin([np.nanmin(cdf_obs[0]),np.nanmin(cdf_sim[0])]), 
+                            np.nanmax([np.nanmax(cdf_obs[0]),np.nanmax(cdf_sim[0])]), 
+                            100)
+
+    interp_obs = interp1d(
+        cdf_obs[0],
+        cdf_obs[1],
+        bounds_error=False,
+        fill_value=np.nan
+    )
+    interp_sim = interp1d(
+        cdf_sim[0],
+        cdf_sim[1],
+        bounds_error=False,
+        fill_value=np.nan
+    )
+
+    distance = np.abs(interp_sim(freq_grid) - interp_obs(freq_grid))
+
+    return np.nanmax(distance)
+
+
+from scipy.signal import welch
+
+def _welch_spectrum (x):
+
+    frequencies, psd = welch(x, fs=1, detrend=False, scaling='spectrum')
+    return psd, frequencies
+
+def _get_psd_on_period_grid (x, max_period:int):
+    """Calculate Power Spectral Density with Welch method. Then interpolate on a regular grid of integer periods for better handling."""
+
+    psd, frequencies = _welch_spectrum(x)
+
+    # interpolate on integer period values (in steps of timeseries)
+    period_grid = np.arange(1, max_period, 1)
+    freq_grid = 1/period_grid
+
+    interp = interp1d(
+        frequencies,
+        psd,
+        bounds_error=False,
+        fill_value=np.nan
+    )
+    psd = interp(freq_grid)    
+
+    return psd
 
 def calculate_all_metrics(obs: DataArray,
                           sim: DataArray,
@@ -806,6 +931,8 @@ def calculate_all_metrics(obs: DataArray,
 def calculate_metrics(obs: DataArray,
                       sim: DataArray,
                       metrics: List[str],
+                      max_period:int=90, # for metrics in frequency domain
+                      log:bool=True, # for metrics in frequency domain
                       resolution: str = "1D",
                       datetime_coord: str = None) -> Dict[str, float]:
     """Calculate specific metrics with default values.
@@ -868,6 +995,12 @@ def calculate_metrics(obs: DataArray,
             values["Missed-Peaks"] = missed_peaks(obs, sim, resolution=resolution, datetime_coord=datetime_coord)
         elif metric.lower() == "peak-mape":
             values["Peak-MAPE"] = mean_absolute_percentage_peak_error(obs, sim)
+        elif metric.lower() == "frmse":
+            values["fRMSE"] = psd_rmse(obs, sim, max_period=max_period, log=log)
+        elif metric.lower() == "fpearson-r":
+            values["fPearson-r"] = psd_corr(obs, sim, max_period=max_period, log=log)        
+        elif metric.lower() == "fksd":
+            values["fKSD"] = psd_kolmogorov_smirnov_dist(obs, sim, max_period=max_period)
         else:
             raise RuntimeError(f"Unknown metric {metric}")
 
